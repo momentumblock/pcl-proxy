@@ -1,0 +1,9 @@
+[build]
+  functions = "netlify/functions"
+  command = "npm install"
+  publish = "."
+
+[[redirects]]
+  from = "/api/proxy"
+  to = "/.netlify/functions/proxy"
+  status = 200
