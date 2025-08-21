@@ -1,9 +1,23 @@
 // netlify/functions/proxy.js
-// Minimal JSON forwarder → Google Apps Script (Web App /exec)
-// - POST only, CORS enabled
-// - Forwards the raw request body verbatim
-// - Follows Apps Script's redirect and times out quickly
-// - Routes lookup_booking to a separate read-only Apps Script
+// -----------------------------------------------------------------------------
+// Port City Luggage — Proxy to Google Apps Script backends
+// Purpose: Forward JSON POSTs to the right Apps Script (Booking vs Manage/Lookup)
+// Edited: 2025-08-21
+//
+// Behavior
+// - POST only (CORS + OPTIONS preflight supported)
+// - Forwards raw request body verbatim (no parse/re-stringify before send)
+// - Follows Apps Script 302 redirects
+// - 12s upstream timeout
+// - Routes all Manage/Lookup calls to GAS_LOOKUP_URL
+//   (manage_lookup, manage_update_address, manage_catalog, extras_checkout, extras_confirm)
+//   Also supports legacy alias: lookup_booking
+//
+// Env vars
+// - GAS_URL / APPS_SCRIPT_URL / SCRIPT_URL .......... Booking backend (write-capable)
+// - GAS_LOOKUP_URL / LOOKUP_URL ..................... Lookup/Manage backend (read + limited writes)
+// Fallback: a hard-coded BOOKING URL can be left below as a safety net.
+// -----------------------------------------------------------------------------
 
 exports.handler = async (event) => {
   const cors = {
@@ -27,16 +41,16 @@ exports.handler = async (event) => {
     };
   }
 
-  // Existing booking backend (write-capable)
+  // Booking backend (write-capable)
   const GAS_BOOKING_URL =
     process.env.GAS_URL ||
     process.env.APPS_SCRIPT_URL ||
     process.env.SCRIPT_URL ||
-    // fallback to your hard-coded booking Apps Script URL:
+    // Hard-coded fallback (optional, but handy for emergencies)
     'https://script.google.com/macros/s/AKfycbzw412CHbweoMCHIL70TQiHUcPKaBCtkddxHBcs-rFI14yWiI_c-D2ZhW4rhsSkiAxU/exec';
 
-  // New read-only lookup backend
-  const GAS_LOOKUP_URL = "https://script.google.com/macros/s/AKfycbzw412CHbweoMCHIL70TQiHUcPKaBCtkddxHBcs-rFI14yWiI_c-D2ZhW4rhsSkiAxU/exec"
+  // Lookup/Manage backend (read + limited writes)
+  const GAS_LOOKUP_URL =
     process.env.GAS_LOOKUP_URL ||
     process.env.LOOKUP_URL ||
     '';
@@ -49,24 +63,40 @@ exports.handler = async (event) => {
     };
   }
 
-  // Decide target by fn (only route lookup_booking to the read-only URL)
+  // Decide target by fn
   const raw = event.body || '{}';
-  let target = GAS_BOOKING_URL;
-
+  let fn = '';
   try {
     const j = JSON.parse(raw);
-    if (j && j.fn === 'lookup_booking') {
-      if (!GAS_LOOKUP_URL) {
-        return {
-          statusCode: 200,
-          headers: { ...cors, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ok: false, error: 'missing GAS_LOOKUP_URL env' }),
-        };
-      }
-      target = GAS_LOOKUP_URL;
-    }
+    fn = String(j.fn || '');
   } catch {
-    // ignore parse error; stay on booking URL
+    // ignore parse error; default to booking URL
+  }
+
+  // All manage/lookup functions routed to the Lookup backend
+  const MANAGE_FNS = new Set([
+    'manage_lookup',
+    'manage_update_address',
+    'manage_catalog',
+    'extras_checkout',
+    'extras_confirm',
+  ]);
+  // Back-compat alias used earlier
+  const LEGACY_LOOKUP_ALIAS = 'lookup_booking';
+
+  let target = GAS_BOOKING_URL;
+  let targetName = 'booking';
+
+  if (MANAGE_FNS.has(fn) || fn === LEGACY_LOOKUP_ALIAS) {
+    if (!GAS_LOOKUP_URL) {
+      return {
+        statusCode: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ok: false, error: 'missing GAS_LOOKUP_URL env' }),
+      };
+    }
+    target = GAS_LOOKUP_URL;
+    targetName = 'lookup';
   }
 
   // Upstream fetch with a short timeout
@@ -86,14 +116,26 @@ exports.handler = async (event) => {
     const text = await upstream.text(); // Apps Script returns JSON text
     return {
       statusCode: 200,
-      headers: { ...cors, 'Content-Type': 'application/json' },
+      headers: {
+        ...cors,
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        'X-Proxy-Target': targetName,
+        'X-Proxy-Version': 'pcl-proxy/2025-08-21',
+      },
       body: text,
     };
   } catch (err) {
     clearTimeout(timer);
     return {
       statusCode: 200,
-      headers: { ...cors, 'Content-Type': 'application/json' },
+      headers: {
+        ...cors,
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        'X-Proxy-Target': targetName,
+        'X-Proxy-Version': 'pcl-proxy/2025-08-21',
+      },
       body: JSON.stringify({
         ok: false,
         error: 'proxy_upstream_error',
