@@ -7,20 +7,34 @@
 
 exports.handler = async (event) => {
   // Dynamically reflect origin & requested headers to satisfy preflight
-  const origin = event.headers?.origin || '*';
+  const h = event.headers || {};
+  const origin =
+    h.origin || h.Origin || h.ORIGIN || '*';
+
   const requestedHeaders =
-    event.headers?.['access-control-request-headers'] ||
-    'Content-Type';
+    h['access-control-request-headers'] ||
+    h['Access-Control-Request-Headers'] ||
+    'content-type';
+
+  const requestedMethod =
+    h['access-control-request-method'] ||
+    h['Access-Control-Request-Method'] ||
+    'POST';
 
   const baseCors = {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': requestedHeaders,
-    'Vary': 'Origin',
+    'Access-Control-Max-Age': '600',
+    'Vary': 'Origin, Access-Control-Request-Headers, Access-Control-Request-Method',
   };
+  // Only include credentials when not using wildcard origin
+  if (origin !== '*') baseCors['Access-Control-Allow-Credentials'] = 'true';
 
   // Preflight
   if (event.httpMethod === 'OPTIONS') {
+    // Echo the method asked for; most browsers only care that it's allowed.
+    baseCors['Access-Control-Allow-Methods'] = `POST, OPTIONS${requestedMethod && requestedMethod !== 'POST' ? ',' + requestedMethod : ''}`;
     return { statusCode: 204, headers: baseCors, body: '' };
   }
 
