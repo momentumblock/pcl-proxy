@@ -1,8 +1,9 @@
 // netlify/functions/proxy.js
 // Minimal JSON forwarder → Google Apps Script (Web App /exec)
 // - POST only, CORS enabled
-// - Forwards the raw request body verbatim (no re-stringify)
+// - Forwards the raw request body verbatim
 // - Follows Apps Script's redirect and times out quickly
+// - Routes lookup_booking to a separate read-only Apps Script
 
 exports.handler = async (event) => {
   const cors = {
@@ -26,13 +27,20 @@ exports.handler = async (event) => {
     };
   }
 
-  const GAS_URL =
+  // Existing booking backend (write-capable)
+  const GAS_BOOKING_URL =
     process.env.GAS_URL ||
     process.env.APPS_SCRIPT_URL ||
     process.env.SCRIPT_URL ||
     '';
 
-  if (!GAS_URL) {
+  // New read-only lookup backend
+  const GAS_LOOKUP_URL =
+    process.env.GAS_LOOKUP_URL ||
+    process.env.LOOKUP_URL ||
+    '';
+
+  if (!GAS_BOOKING_URL) {
     return {
       statusCode: 200,
       headers: { ...cors, 'Content-Type': 'application/json' },
@@ -40,21 +48,44 @@ exports.handler = async (event) => {
     };
   }
 
+  // Decide target by fn (only route lookup_booking to the read-only URL)
+  const raw = event.body || '{}';
+  let fn = '';
+  try {
+    const j = JSON.parse(raw);
+    fn = String(j.fn || '');
+  } catch (_) {
+    // If parsing fails, fall back to booking backend
+    fn = '';
+  }
+
+  let target = GAS_BOOKING_URL;
+  if (fn === 'lookup_booking') {
+    if (!GAS_LOOKUP_URL) {
+      return {
+        statusCode: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ok: false, error: 'missing GAS_LOOKUP_URL env' }),
+      };
+    }
+    target = GAS_LOOKUP_URL;
+  }
+
   // Upstream fetch with a short timeout (improves perceived latency)
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12000); // 12s cap
 
   try {
-    const upstream = await fetch(GAS_URL, {
+    const upstream = await fetch(target, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: event.body || '{}',          // pass-through; no parse/re-stringify
-      redirect: 'follow',                // follow Apps Script 302
+      body: raw,                       // pass-through; no re-stringify
+      redirect: 'follow',              // follow Apps Script 302
       signal: controller.signal,
     });
     clearTimeout(timer);
 
-    const text = await upstream.text();  // Apps Script returns JSON text
+    const text = await upstream.text(); // Apps Script returns JSON text
     return {
       statusCode: 200,
       headers: { ...cors, 'Content-Type': 'application/json' },
