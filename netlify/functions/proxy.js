@@ -1,42 +1,34 @@
 // netlify/functions/proxy.js
 // -----------------------------------------------------------------------------
 // Port City Luggage — Proxy to Google Apps Script backends
-// Purpose: Forward JSON POSTs to the right Apps Script (Booking vs Manage/Lookup)
+// (CORS hardened to support arbitrary request headers from booking UI)
 // Edited: 2025-08-21
-//
-// Behavior
-// - POST only (CORS + OPTIONS preflight supported)
-// - Forwards raw request body verbatim (no parse/re-stringify before send)
-// - Follows Apps Script 302 redirects
-// - 12s upstream timeout
-// - Routes all Manage/Lookup calls to GAS_LOOKUP_URL
-//   (manage_lookup, manage_update_address, manage_catalog, extras_checkout, extras_confirm)
-//   Also supports legacy alias: lookup_booking
-//
-// Env vars
-// - GAS_URL / APPS_SCRIPT_URL / SCRIPT_URL .......... Booking backend (write-capable)
-// - GAS_LOOKUP_URL / LOOKUP_URL ..................... Lookup/Manage backend (read + limited writes)
-// Fallback: a hard-coded BOOKING URL can be left below as a safety net.
 // -----------------------------------------------------------------------------
 
 exports.handler = async (event) => {
-  const cors = {
-    'Access-Control-Allow-Origin': '*',
+  // Dynamically reflect origin & requested headers to satisfy preflight
+  const origin = event.headers?.origin || '*';
+  const requestedHeaders =
+    event.headers?.['access-control-request-headers'] ||
+    'Content-Type';
+
+  const baseCors = {
+    'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': requestedHeaders,
     'Vary': 'Origin',
   };
 
   // Preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: cors, body: '' };
+    return { statusCode: 204, headers: baseCors, body: '' };
   }
 
   // Only POST
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
-      headers: { ...cors, 'Content-Type': 'application/json' },
+      headers: { ...baseCors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ok: false, error: 'POST_only' }),
     };
   }
@@ -46,7 +38,7 @@ exports.handler = async (event) => {
     process.env.GAS_URL ||
     process.env.APPS_SCRIPT_URL ||
     process.env.SCRIPT_URL ||
-    // Hard-coded fallback (optional, but handy for emergencies)
+    // Hard-coded fallback (kept for safety)
     'https://script.google.com/macros/s/AKfycbzw412CHbweoMCHIL70TQiHUcPKaBCtkddxHBcs-rFI14yWiI_c-D2ZhW4rhsSkiAxU/exec';
 
   // Lookup/Manage backend (read + limited writes)
@@ -58,7 +50,7 @@ exports.handler = async (event) => {
   if (!GAS_BOOKING_URL) {
     return {
       statusCode: 200,
-      headers: { ...cors, 'Content-Type': 'application/json' },
+      headers: { ...baseCors, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ok: false, error: 'missing GAS_URL env' }),
     };
   }
@@ -66,14 +58,8 @@ exports.handler = async (event) => {
   // Decide target by fn
   const raw = event.body || '{}';
   let fn = '';
-  try {
-    const j = JSON.parse(raw);
-    fn = String(j.fn || '');
-  } catch {
-    // ignore parse error; default to booking URL
-  }
+  try { fn = String(JSON.parse(raw).fn || ''); } catch { /* keep default */ }
 
-  // All manage/lookup functions routed to the Lookup backend
   const MANAGE_FNS = new Set([
     'manage_lookup',
     'manage_update_address',
@@ -81,7 +67,6 @@ exports.handler = async (event) => {
     'extras_checkout',
     'extras_confirm',
   ]);
-  // Back-compat alias used earlier
   const LEGACY_LOOKUP_ALIAS = 'lookup_booking';
 
   let target = GAS_BOOKING_URL;
@@ -91,7 +76,7 @@ exports.handler = async (event) => {
     if (!GAS_LOOKUP_URL) {
       return {
         statusCode: 200,
-        headers: { ...cors, 'Content-Type': 'application/json' },
+        headers: { ...baseCors, 'Content-Type': 'application/json' },
         body: JSON.stringify({ ok: false, error: 'missing GAS_LOOKUP_URL env' }),
       };
     }
@@ -101,7 +86,7 @@ exports.handler = async (event) => {
 
   // Upstream fetch with a short timeout
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000); // 12s cap
+  const timer = setTimeout(() => controller.abort(), 12000); // 12s
 
   try {
     const upstream = await fetch(target, {
@@ -113,15 +98,15 @@ exports.handler = async (event) => {
     });
     clearTimeout(timer);
 
-    const text = await upstream.text(); // Apps Script returns JSON text
+    const text = await upstream.text();
     return {
       statusCode: 200,
       headers: {
-        ...cors,
+        ...baseCors,
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store',
         'X-Proxy-Target': targetName,
-        'X-Proxy-Version': 'pcl-proxy/2025-08-21',
+        'X-Proxy-Version': 'pcl-proxy/2025-08-21+cors',
       },
       body: text,
     };
@@ -130,11 +115,11 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: {
-        ...cors,
+        ...baseCors,
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store',
         'X-Proxy-Target': targetName,
-        'X-Proxy-Version': 'pcl-proxy/2025-08-21',
+        'X-Proxy-Version': 'pcl-proxy/2025-08-21+cors',
       },
       body: JSON.stringify({
         ok: false,
