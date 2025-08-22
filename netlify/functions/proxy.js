@@ -32,7 +32,7 @@ exports.handler = async (event) => {
     ...(origin ? { 'Access-Control-Allow-Credentials': 'true' } : {}),
   };
 
-  // Preflight — use permissive response so both paths work
+  // Preflight — permissive so both paths work (body absent on preflight)
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: corsBooking, body: '' };
   }
@@ -91,14 +91,17 @@ exports.handler = async (event) => {
   const targetName = isLookup ? 'lookup' : 'booking';
   const corsOut = isLookup ? corsLookup : corsBooking;
 
-  // Upstream fetch with a short timeout
+  // Upstream fetch with a slightly longer timeout + keep-alive hint
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const timer = setTimeout(() => controller.abort(), 15000);
 
   try {
     const upstream = await fetch(target, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Connection': 'keep-alive'
+      },
       body: raw,               // pass-through; no parse/re-stringify
       redirect: 'follow',      // follow Apps Script 302
       signal: controller.signal,
@@ -119,6 +122,7 @@ exports.handler = async (event) => {
     };
   } catch (err) {
     clearTimeout(timer);
+    // Normalize to consistent JSON (Stripe/clients expect JSON)
     return {
       statusCode: 200,
       headers: {
