@@ -1,133 +1,63 @@
 // netlify/functions/proxy.js
-// -----------------------------------------------------------------------------
-// Port City Luggage — Proxy to Google Apps Script backends
-// Back-compat for BOOKING (wildcard CORS like the old proxy) +
-// hardened CORS for LOOKUP/MANAGE (mirrored origin + credentials).
-// Edited: 2025-08-21 (lean rewrite; behavior preserved)
-// -----------------------------------------------------------------------------
+// Minimal POST-only forwarder → Google Apps Script Web App (/exec)
 
-/** Small helpers **/
-const getHeader = (event, name) =>
-  event.headers?.[name] ?? event.headers?.[name.toLowerCase()] ?? '';
-
-const json = (statusCode, headers, bodyObjOrString) => ({
-  statusCode,
-  headers,
-  body: typeof bodyObjOrString === 'string'
-    ? bodyObjOrString
-    : JSON.stringify(bodyObjOrString),
-});
-
-// Build CORS presets
-const buildCors = (origin, requestedHeaders) => {
-  const base = {
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Max-Age': '600',
-    'Vary': 'Origin, Access-Control-Request-Headers, Access-Control-Request-Method',
-  };
-  // Booking = legacy wildcard
-  const booking = {
-    ...base,
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'content-type',
-  };
-  // Lookup/manage = mirror origin + allow creds + mirror requested headers
-  const lookup = {
-    ...base,
-    'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Headers': requestedHeaders || 'content-type',
-    ...(origin ? { 'Access-Control-Allow-Credentials': 'true' } : {}),
-  };
-  return { booking, lookup };
-};
-
-// Manage/lookup fn list (+ legacy alias)
-const MANAGE_FNS = new Set([
-  'manage_lookup',
-  'manage_update_address',
-  'manage_catalog',
-  'extras_checkout',
-  'extras_confirm',
-]);
-const LEGACY_LOOKUP_ALIAS = 'lookup_booking';
-
-// Emergency fallback (keep as-is)
-const EMERGENCY_BOOKING_URL =
-  'https://script.google.com/macros/s/AKfycbzw412CHbweoMCHIL70TQiHUcPKaBCtkddxHBcs-rFI14yWiI_c-D2ZhW4rhsSkiAxU/exec';
+const GAS_URL = process.env.GAS_URL; // set in Netlify env
 
 exports.handler = async (event) => {
-  const origin = getHeader(event, 'origin') || '';
-  const requestedHeaders =
-    getHeader(event, 'access-control-request-headers') || 'content-type';
-  const { booking: corsBooking, lookup: corsLookup } = buildCors(origin, requestedHeaders);
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Vary': 'Origin',
+  };
 
-  // Preflight — permissive so both paths work (unchanged)
+  // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return json(204, corsBooking, '');
+    return { statusCode: 204, headers: cors, body: '' };
   }
 
-  // Only POST
+  // Enforce POST
   if (event.httpMethod !== 'POST') {
-    return json(405, { ...corsBooking, 'Content-Type': 'application/json' }, { ok:false, error:'POST_only' });
+    return {
+      statusCode: 405,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Method Not Allowed' }),
+    };
   }
 
-  // Env: booking (write-capable)
-  const GAS_BOOKING_URL =
-    process.env.GAS_URL ||
-    process.env.APPS_SCRIPT_URL ||
-    process.env.SCRIPT_URL ||
-    EMERGENCY_BOOKING_URL;
+  if (!GAS_URL) {
+    return {
+      statusCode: 500,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Missing GAS_URL env var' }),
+    };
+  }
 
-  // Env: lookup/manage (read + limited writes)
-  const GAS_LOOKUP_URL =
-    process.env.GAS_LOOKUP_URL ||
-    process.env.LOOKUP_URL ||
-    '';
-
-  // Decide route by fn (default → booking)
-  const raw = event.body || '{}';
-  let fn = '';
-  try { fn = String(JSON.parse(raw).fn || ''); } catch { /* keep default */ }
-
-  const isLookup = MANAGE_FNS.has(fn) || fn === LEGACY_LOOKUP_ALIAS;
-  const target = isLookup ? (GAS_LOOKUP_URL || GAS_BOOKING_URL) : GAS_BOOKING_URL;
-  const targetName = isLookup ? 'lookup' : 'booking';
-  const corsOut = isLookup ? corsLookup : corsBooking;
-
-  // Upstream fetch with timeout
+  // Forward raw JSON body to Apps Script
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10s cap
 
   try {
-    const upstream = await fetch(target, {
+    const resp = await fetch(GAS_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Connection': 'keep-alive',
-      },
-      body: raw,               // pass-through; no parse/re-stringify
-      redirect: 'follow',      // follow Apps Script 302
+      headers: { 'Content-Type': 'application/json' },
+      body: event.body,                // forward verbatim
       signal: controller.signal,
+      redirect: 'follow',              // normal JSON responses
     });
-    clearTimeout(timer);
+    clearTimeout(timeout);
 
-    const text = await upstream.text(); // GAS returns JSON text
-    return json(200, {
-      ...corsOut,
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
-      'X-Proxy-Target': targetName,
-      'X-Proxy-Version': 'pcl-proxy/2025-08-21+lean',
-    }, text);
+    const text = await resp.text();    // pass through whatever Apps Script sent
+    return {
+      statusCode: resp.status,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+      body: text,
+    };
   } catch (err) {
-    clearTimeout(timer);
-    // Normalize to consistent JSON (Stripe/clients expect JSON)
-    return json(200, {
-      ...corsOut,
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
-      'X-Proxy-Target': targetName,
-      'X-Proxy-Version': 'pcl-proxy/2025-08-21+lean',
-    }, { ok:false, error:'proxy_upstream_error', details:String(err) });
+    return {
+      statusCode: 502,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Upstream failure', detail: String(err) }),
+    };
   }
 };
