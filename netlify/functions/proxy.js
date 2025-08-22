@@ -35,7 +35,7 @@ exports.handler = async (event) => {
 
   // Forward raw JSON body to Apps Script
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000); // 10s cap
+  const timeout = setTimeout(() => controller.abort(), 30000); // 30s cap
 
   try {
     const resp = await fetch(GAS_URL, {
