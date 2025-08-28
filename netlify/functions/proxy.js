@@ -1,71 +1,51 @@
 // netlify/functions/proxy.js
-// Minimal POST-only forwarder → Google Apps Script Web App (/exec)
-// - Proper CORS preflight (reflect requested headers)
-// - Forwards the incoming Content-Type to Apps Script
 
-const GAS_URL = process.env.GAS_URL; // set in Netlify env
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
 exports.handler = async (event) => {
-  const origin = event.headers.origin || '*';
-  const requested = event.headers['access-control-request-headers'] || '';
-
-  const cors = {
-    'Access-Control-Allow-Origin': origin,
-    'Vary': 'Origin, Access-Control-Request-Headers',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    // reflect whatever headers the browser plans to send (includes custom ones like x-prev-am)
-    'Access-Control-Allow-Headers': requested || 'Content-Type, Authorization, X-Requested-With, X-Prev-Am, X-Trace',
-  };
-
-  // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: cors, body: '' };
+    return { statusCode: 204, headers: CORS };
   }
 
-  // Enforce POST
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
-      headers: { ...cors, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ok:false, error: 'method_not_allowed' }),
+      headers: CORS,
+      body: JSON.stringify({ error: 'Method not allowed' }),
     };
   }
-
-  if (!GAS_URL) {
-    return {
-      statusCode: 500,
-      headers: { ...cors, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ok:false, error: 'missing_env_GAS_URL' }),
-    };
-  }
-
-  // Forward raw body to Apps Script with the original Content-Type
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000); // 30s cap
 
   try {
-    const contentType = event.headers['content-type'] || 'application/json';
-    const resp = await fetch(GAS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': contentType },
-      body: event.body,                // forward verbatim
-      signal: controller.signal,
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
+    const body = JSON.parse(event.body);
+    console.log("Proxy received:", body);
 
-    const text = await resp.text();    // pass through backend response
-    // Always reply as JSON to the widget
+    const GOOGLE_SCRIPT_URL = process.env.GOOGLE_SCRIPT_URL;
+    const response = await fetch(GOOGLE_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { data = { raw: text }; }
+
     return {
-      statusCode: resp.status,
-      headers: { ...cors, 'Content-Type': 'application/json' },
-      body: text && text.trim().length ? text : JSON.stringify({ ok:false, error:'empty_backend_response' }),
+      statusCode: 200,
+      headers: CORS,
+      body: JSON.stringify(data),
     };
   } catch (err) {
+    console.error('Proxy error:', err);
     return {
-      statusCode: 502,
-      headers: { ...cors, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ok:false, error: 'proxy_fetch_failed', detail: String(err) }),
+      statusCode: 500,
+      headers: CORS,
+      body: JSON.stringify({ error: 'Proxy error' }),
     };
   }
 };
