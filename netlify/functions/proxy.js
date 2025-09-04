@@ -1,18 +1,9 @@
 // netlify/functions/proxy.js
 
-const ALLOWED = new Set([
-  'https://www.portcityluggage.com',
-  'http://localhost:3000',
-  'http://localhost:5173'
-]);
-const origin = (typeof Headers !== 'undefined' && new Headers(event?.headers).get('origin')) || '';
-const allow = ALLOWED.has(origin) ? origin : 'https://www.portcityluggage.com';
-
 const CORS = {
-  'Access-Control-Allow-Origin': allow,
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
-  'Vary': 'Origin',
 };
 
 // ---- Map fn -> target script (Apps Script /exec URL in env) ----
