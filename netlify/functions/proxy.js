@@ -17,10 +17,13 @@ const C_FUNS = new Set([
   'extras_confirm',
 ]);
 
-// (Optional) If/when you use WebApp A (Booking widget) via proxy, add its fns here:
+// WebApp A (Booking): booking widget flow
 const A_FUNS = new Set([
-  // examples (adjust to your actual A endpoints):
-  // 'availability', 'quote', 'create_booking', 'confirm_booking'
+  'config',
+  'availability',
+  'book',
+  'checkout',
+  'confirm',
 ]);
 
 // (Optional) If/when you want to directly post Ops events (WebApp B) via proxy:
@@ -55,7 +58,6 @@ exports.handler = async (event) => {
     try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
 
     // Allow explicit override: { target: "A" | "B" | "C" | "<full URL>" }
-    // If "target" looks like a URL, use it directly. Otherwise map A/B/C to env URLs.
     let targetUrl = null;
     const target = (body && body.target && String(body.target).trim()) || '';
     if (/^https?:\/\//i.test(target)) {
@@ -76,7 +78,7 @@ exports.handler = async (event) => {
       return {
         statusCode: 400,
         headers: CORS,
-        body: JSON.stringify({ error: 'No target Apps Script URL configured/matched.' }),
+        body: JSON.stringify({ error: 'No target Apps Script URL configured/matched (booking uses GOOGLE_SCRIPT_URL_A).' }),
       };
     }
 
