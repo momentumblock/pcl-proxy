@@ -17,13 +17,14 @@ const C_FUNS = new Set([
   'extras_confirm',
 ]);
 
-// WebApp A (Booking): booking widget flow
+// WebApp A (Booking widget) — core booking endpoints
 const A_FUNS = new Set([
+  'ping',        // used by widget .config()
   'config',
   'availability',
   'book',
   'checkout',
-  'confirm',
+  'confirm'
 ]);
 
 // (Optional) If/when you want to directly post Ops events (WebApp B) via proxy:
