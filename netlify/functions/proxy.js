@@ -9,7 +9,6 @@ const CORS = {
 // ---- Map fn -> target script (Apps Script /exec URL in env) ----
 // WebApp C (Lookup + Manage): manages all LOOKUP/MANAGE and EXTRAS flows
 const C_FUNS = new Set([
-  'ping',
   'manage_lookup',
   'manage_update_address',
   'manage_catalog',
