@@ -6,8 +6,7 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// ---- Map fn -> target script (Apps Script /exec URL in env) ----
-// WebApp C (Lookup + Manage): manages all LOOKUP/MANAGE and EXTRAS flows
+// WebApp routing sets
 const C_FUNS = new Set([
   'manage_lookup',
   'manage_update_address',
@@ -16,27 +15,24 @@ const C_FUNS = new Set([
   'extras_confirm',
 ]);
 
-// WebApp A (Booking widget) — core booking endpoints
 const A_FUNS = new Set([
-  'ping',        // used by widget .config()
+  'ping',
   'config',
   'availability',
   'book',
   'checkout',
-  'confirm'
+  'confirm',
 ]);
 
-// (Optional) If/when you want to directly post Ops events (WebApp B) via proxy:
 const B_FUNS = new Set([
-  // examples (if you ever call Ops directly from the site)
-  // 'manage_address_updated', 'extras_paid'
+  // placeholder if needed
 ]);
 
 function pickTargetByFn(fn) {
-  if (C_FUNS.has(fn)) return process.env.GOOGLE_SCRIPT_URL_C; // WebApp C (/exec)
-  if (A_FUNS.has(fn)) return process.env.GOOGLE_SCRIPT_URL_A; // WebApp A (/exec)
-  if (B_FUNS.has(fn)) return process.env.GOOGLE_SCRIPT_URL_B; // WebApp B (/exec)
-  return process.env.GOOGLE_SCRIPT_URL ?? null; // fallback for legacy setups
+  if (C_FUNS.has(fn)) return process.env.GOOGLE_SCRIPT_URL_C;
+  if (A_FUNS.has(fn)) return process.env.GOOGLE_SCRIPT_URL_A;
+  if (B_FUNS.has(fn)) return process.env.GOOGLE_SCRIPT_URL_B;
+  return process.env.GOOGLE_SCRIPT_URL ?? null;
 }
 
 exports.handler = async (event) => {
@@ -53,24 +49,21 @@ exports.handler = async (event) => {
   }
 
   try {
-    // parse JSON
-    let body = {};
-    try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
+    const body = JSON.parse(event.body || '{}');
+    const fn = String(body.fn || '').trim();
 
-    // Allow explicit override: { target: "A" | "B" | "C" | "<full URL>" }
+    // Allow override via { target: "A" | "B" | "C" | "<full URL>" }
     let targetUrl = null;
-    const target = (body && body.target && String(body.target).trim()) || '';
-    if (/^https?:\/\//i.test(target)) {
+    const target = String(body.target || '').trim();
+    if (target.startsWith('http')) {
       targetUrl = target;
-    } else if (target.toUpperCase() === 'A') {
+    } else if (target === 'A') {
       targetUrl = process.env.GOOGLE_SCRIPT_URL_A;
-    } else if (target.toUpperCase() === 'B') {
+    } else if (target === 'B') {
       targetUrl = process.env.GOOGLE_SCRIPT_URL_B;
-    } else if (target.toUpperCase() === 'C') {
+    } else if (target === 'C') {
       targetUrl = process.env.GOOGLE_SCRIPT_URL_C;
     } else {
-      // auto-route by fn
-      const fn = String(body.fn || '').trim();
       targetUrl = pickTargetByFn(fn);
     }
 
@@ -78,26 +71,28 @@ exports.handler = async (event) => {
       return {
         statusCode: 400,
         headers: CORS,
-        body: JSON.stringify({ error: 'No target Apps Script URL configured/matched (booking uses GOOGLE_SCRIPT_URL_A).' }),
+        body: JSON.stringify({ error: 'No target Apps Script URL configured or matched.' }),
       };
     }
 
-    // forward
     const resp = await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: event.body, // send raw JSON through
+      body: event.body,
     });
 
-    const rawText = await resp.text();
-    let data;
-    try { data = JSON.parse(rawText); } catch { data = { raw: rawText }; }
+    const json = await resp.json().catch(() => ({
+      error: 'Invalid JSON returned from Apps Script',
+      raw: await resp.text(),
+    }));
 
-    // mirror non-2xx responses to the client but keep CORS OK
     return {
       statusCode: resp.status || 200,
-      headers: CORS,
-      body: JSON.stringify(data),
+      headers: {
+        ...CORS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(json),
     };
   } catch (err) {
     console.error('Proxy error:', err);
